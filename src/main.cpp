@@ -30,7 +30,7 @@
             close(fromEngine[0]);
 
             // Start Komodo (Linux binary!)
-            execlp("./output/bin/stockfish", "stockfish", nullptr);
+            execlp("../src/stockfish", "stockfish", nullptr);
 
             perror("execlp failed");
             exit(1);
