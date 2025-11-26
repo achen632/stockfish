@@ -1,113 +1,211 @@
-    #include <SFML/Graphics.hpp>
-    #include <iostream>
-    #include <string>
-    #include <unistd.h>
-    #include <sys/types.h>
-    #include <sys/wait.h>
+#include <iostream>
+#include <string>
+#include <vector>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <sstream>     // for std::stringstream
+#include <algorithm>   // for std::find
 
-    int main() {
-        int toEngine[2];      // parent → engine
-        int fromEngine[2];    // engine → parent
+// ------------------------
+// Utility: read until keyword
+// ------------------------
+std::string readUntil(int fd, const std::string& keyword) {
+    std::string acc;
+    char buf[4096];
 
-        pipe(toEngine);
-        pipe(fromEngine);
+    while (true) {
+        int n = read(fd, buf, sizeof(buf) - 1);
+        if (n <= 0) continue;
+        buf[n] = 0;
+        acc += buf;
 
-        pid_t pid = fork();
+        if (acc.find(keyword) != std::string::npos)
+            return acc;
+    }
+}
 
-        if (pid == 0) {
-            // -------------------
-            // Child (engine)
-            // -------------------
-            
-            // Redirect parent → engine pipe to stdin
-            dup2(toEngine[0], STDIN_FILENO);
+// ------------------------
+// Parse Stockfish best move
+// ------------------------
+std::string parseBestMove(const std::string& out) {
+    size_t pos = out.find("bestmove ");
+    if (pos == std::string::npos) return "";
+    pos += 9;
+    return out.substr(pos, 4);  // e2e4
+}
 
-            // Redirect stdout to parent
-            dup2(fromEngine[1], STDOUT_FILENO);
+// ------------------------
+// Display ASCII board
+// ------------------------
+void printBoard(const std::vector<std::string>& board) {
+    std::cout << "\n  +-----------------+\n";
+    for (int r = 7; r >= 0; r--) {
+        std::cout << r + 1 << " | ";
+        for (int c = 0; c < 8; c++)
+            std::cout << board[r][c] << " ";
+        std::cout << "|\n";
+    }
+    std::cout << "  +-----------------+\n";
+    std::cout << "    a b c d e f g h\n\n";
+}
 
-            // Close unused ends
-            close(toEngine[1]);
-            close(fromEngine[0]);
+// ------------------------
+// Apply a move (very minimal, only string copy)
+// ------------------------
+void applyMove(std::vector<std::string>& board, const std::string& mv) {
+    int c1 = mv[0] - 'a';
+    int r1 = mv[1] - '1';
+    int c2 = mv[2] - 'a';
+    int r2 = mv[3] - '1';
 
-            // Start Komodo (Linux binary!)
-            execlp("../src/stockfish", "stockfish", nullptr);
+    char piece = board[r1][c1];
+    board[r1][c1] = '.';
+    board[r2][c2] = piece;
+}
 
-            perror("execlp failed");
-            exit(1);
-        }
+std::vector<std::string> getLegalMoves(int fd, int toEngineFd, const std::string& moves) {
+    auto send = [&](const std::string& s) {
+        write(toEngineFd, s.c_str(), s.size());
+    };
 
-        // -------------------
-        // Parent (your game)
-        // -------------------
+    // Query legal moves with perft
+    send("position startpos moves" + moves + "\n");
+    send("go perft 1\n");
 
-        close(toEngine[0]);
-        close(fromEngine[1]);
+    std::vector<std::string> legal;
+    std::string out;
+    char buf[4096];
 
-        auto send = [&](const std::string& msg) {
-            write(toEngine[1], msg.c_str(), msg.size());
-        };
+    while (true) {
+        int n = read(fd, buf, sizeof(buf) - 1);
+        if (n <= 0) continue;
+        buf[n] = 0;
+        out += buf;
 
-        char buffer[4096];
+        if (out.find("Nodes searched") != std::string::npos)
+            break;
+    }
 
-        // Initialize UCI
-        send("uci\n");
+    // Parse moves: they appear like "e2e4: 1"
+    std::stringstream ss(out);
+    std::string token;
+    while (ss >> token) {
+        if (token.size() >= 4 && token[2] >= 'a' && token[2] <= 'h')
+            legal.push_back(token.substr(0,4));
+    }
 
-        // Read until engine says "uciok"
+    return legal;
+}
+
+// ------------------------
+// Main Program
+// ------------------------
+int main() {
+    std::cout << "Starting\n";
+    // Pipes
+    int toEngine[2];
+    int fromEngine[2];
+    pipe(toEngine);
+    pipe(fromEngine);
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        // CHILD → Stockfish process
+        dup2(toEngine[0], STDIN_FILENO);
+        dup2(fromEngine[1], STDOUT_FILENO);
+
+        close(toEngine[1]);
+        close(fromEngine[0]);
+
+        execlp("../src/stockfish", "stockfish", nullptr);
+        perror("execlp failed");
+        exit(1);
+    }
+
+    // PARENT
+    close(toEngine[0]);
+    close(fromEngine[1]);
+
+    auto send = [&](const std::string& s) {
+        write(toEngine[1], s.c_str(), s.size());
+    };
+
+    // Initialize Stockfish silently
+    send("uci\n");
+    readUntil(fromEngine[0], "uciok");
+    send("isready\n");
+    readUntil(fromEngine[0], "readyok");
+
+    // Starting board
+    std::vector<std::string> board = {
+        "rnbqkbnr",
+        "pppppppp",
+        "........",
+        "........",
+        "........",
+        "........",
+        "PPPPPPPP",
+        "RNBQKBNR"
+    };
+
+    std::string moves;
+
+    while (true) {
+        printBoard(board);
+
+        // -----------------------
+        // GET LEGAL MOVES
+        // -----------------------
+        auto legalMoves = getLegalMoves(fromEngine[0], toEngine[1], moves);
+
+        std::cout << "Legal moves:";
+        for (auto& m : legalMoves) std::cout << " " << m;
+        std::cout << "\n";
+
+        // -----------------------
+        // USER MOVE
+        // -----------------------
+        std::string userMove;
         while (true) {
-            int n = read(fromEngine[0], buffer, sizeof(buffer)-1);
-            if (n > 0) {
-                buffer[n] = 0;
-                std::cout << buffer;
-                if (std::string(buffer).find("uciok") != std::string::npos)
-                    break;
-            }
-        }
-
-        send("isready\n");
-        while (true) {
-            int n = read(fromEngine[0], buffer, sizeof(buffer)-1);
-            if (n > 0) {
-                buffer[n] = 0;
-                std::cout << buffer;
-                if (std::string(buffer).find("readyok") != std::string::npos)
-                    break;
-            }
-        }
-
-        std::cout << "Engine ready.\n";
-
-        std::string moves;
-
-        while (true) {
-            std::string userMove;
             std::cout << "Your move: ";
             std::cin >> userMove;
 
             if (userMove == "quit") {
                 send("quit\n");
+                return 0;
+            }
+
+            // Validate against legal moves
+            if (std::find(legalMoves.begin(), legalMoves.end(), userMove) != legalMoves.end())
                 break;
-            }
 
-            moves += " " + userMove;
-
-            send("position startpos moves" + moves + "\n");
-            send("go depth 10\n");
-
-            // Wait for bestmove
-            while (true) {
-                int n = read(fromEngine[0], buffer, sizeof(buffer)-1);
-                if (n > 0) {
-                    buffer[n] = 0;
-                    std::cout << buffer;
-                    std::string out = buffer;
-                    if (out.find("bestmove") != std::string::npos)
-                        break;
-                }
-            }
-            std::cout << moves << std::endl;
+            std::cout << "Illegal move. Try again.\n";
         }
 
-        close(toEngine[1]);
-        close(fromEngine[0]);
-        wait(nullptr);
+        // Apply move
+        applyMove(board, userMove);
+        moves += " " + userMove;
+
+        // -----------------------
+        // ENGINE MOVE
+        // -----------------------
+        send("position startpos moves" + moves + "\n");
+        send("go depth 12\n");
+
+        std::string result = readUntil(fromEngine[0], "bestmove");
+        std::string engineMove = parseBestMove(result);
+
+        std::cout << "Engine plays: " << engineMove << "\n";
+
+        applyMove(board, engineMove);
+        moves += " " + engineMove;
     }
+
+
+    close(toEngine[1]);
+    close(fromEngine[0]);
+    wait(nullptr);
+
+    return 0;
+}
