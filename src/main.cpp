@@ -4,8 +4,22 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <sstream>     // for std::stringstream
-#include <algorithm>   // for std::find
+#include <sstream>
+#include <algorithm>
+#include <array>
+#include <SFML/Graphics.hpp>
+
+std::array<std::array<char,8>,8> board =
+    {{
+        {{'r','n','b','q','k','b','n','r'}},
+        {{'p','p','p','p','p','p','p','p'}},
+        {{' ',' ',' ',' ',' ',' ',' ',' '}},
+        {{' ',' ',' ',' ',' ',' ',' ',' '}},
+        {{' ',' ',' ',' ',' ',' ',' ',' '}},
+        {{' ',' ',' ',' ',' ',' ',' ',' '}},
+        {{'P','P','P','P','P','P','P','P'}},
+        {{'R','N','B','Q','K','B','N','R'}}
+    }};
 
 // ------------------------
 // Utility: read until keyword
@@ -36,14 +50,17 @@ std::string parseBestMove(const std::string& out) {
 }
 
 // ------------------------
-// Display ASCII board
+// Display ASCII board (array-based)
 // ------------------------
-void printBoard(const std::vector<std::string>& board) {
+void printBoard(const std::array<std::array<char,8>,8>& board) {
     std::cout << "\n  +-----------------+\n";
-    for (int r = 7; r >= 0; r--) {
-        std::cout << r + 1 << " | ";
-        for (int c = 0; c < 8; c++)
-            std::cout << board[r][c] << " ";
+    for (int r = 0; r < 8; r++) {  // start from bottom
+        std::cout << 8 - r << " | ";  // display rank from 8 down to 1
+        for (int c = 0; c < 8; c++) {
+            char p = board[r][c];
+            if (p == ' ') p = '.';
+            std::cout << p << " ";
+        }
         std::cout << "|\n";
     }
     std::cout << "  +-----------------+\n";
@@ -51,16 +68,16 @@ void printBoard(const std::vector<std::string>& board) {
 }
 
 // ------------------------
-// Apply a move (very minimal, only string copy)
+// Apply a move
 // ------------------------
-void applyMove(std::vector<std::string>& board, const std::string& mv) {
+void applyMove(std::array<std::array<char,8>,8>& board, const std::string& mv) {
     int c1 = mv[0] - 'a';
-    int r1 = mv[1] - '1';
+    int r1 = 7 - (mv[1] - '1');  // flip row
     int c2 = mv[2] - 'a';
-    int r2 = mv[3] - '1';
+    int r2 = 7 - (mv[3] - '1');  // flip row
 
     char piece = board[r1][c1];
-    board[r1][c1] = '.';
+    board[r1][c1] = ' ';
     board[r2][c2] = piece;
 }
 
@@ -69,7 +86,6 @@ std::vector<std::string> getLegalMoves(int fd, int toEngineFd, const std::string
         write(toEngineFd, s.c_str(), s.size());
     };
 
-    // Query legal moves with perft
     send("position startpos moves" + moves + "\n");
     send("go perft 1\n");
 
@@ -87,7 +103,6 @@ std::vector<std::string> getLegalMoves(int fd, int toEngineFd, const std::string
             break;
     }
 
-    // Parse moves: they appear like "e2e4: 1"
     std::stringstream ss(out);
     std::string token;
     while (ss >> token) {
@@ -98,11 +113,106 @@ std::vector<std::string> getLegalMoves(int fd, int toEngineFd, const std::string
     return legal;
 }
 
+char mapPieceToFont(char piece)
+{
+    switch(piece)
+    {
+        // White pieces
+        case 'B': return 'n'; // Bishop
+        case 'N': return 'j'; // Knight
+        case 'K': return 'l'; // King
+        case 'Q': return 'w'; // Queen
+        case 'R': return 't'; // Rook
+        case 'P': return 'o'; // Pawn
+
+        // Black pieces
+        case 'b': return 'n'; // Bishop
+        case 'n': return 'j'; // Knight
+        case 'k': return 'l'; // King
+        case 'q': return 'w'; // Queen
+        case 'r': return 't'; // Rook
+        case 'p': return 'o'; // Pawn
+
+        // Other
+        case ' ': return ' '; 
+        default: return ' ';
+    }
+}
+
+void displayBoard(sf::RenderWindow &window, float tileSize, sf::Font &font, const std::array<std::array<char,8>,8>& board)
+{
+    // Colors
+    sf::Color lightColor(200, 180, 140); // darker beige/light brown
+    sf::Color darkColor(120, 80, 50);    // darker brown
+
+    window.clear();
+
+    // Draw board and pieces
+    for (int r = 0; r < 8; r++)
+    {
+        for (int c = 0; c < 8; c++)
+        {
+
+            // --- Draw square ---
+            sf::RectangleShape sq(sf::Vector2f(tileSize, tileSize));
+            sq.setPosition(c * tileSize, r * tileSize);
+
+            if ((r + c) % 2 == 0)
+                sq.setFillColor(lightColor);
+            else
+                sq.setFillColor(darkColor);
+
+            window.draw(sq);
+
+            // --- Draw piece ---
+            char p = board[r][c];
+            if (p != ' ')
+            {
+                sf::Text piece;
+                piece.setFont(font);
+
+                piece.setString(std::string(1, mapPieceToFont(p)));
+                piece.setCharacterSize(tileSize * 0.9f);
+
+                // Center the piece in the square
+                sf::FloatRect b = piece.getLocalBounds();
+                piece.setOrigin(b.left + b.width/2, b.top + b.height/2);
+                piece.setPosition(
+                    c * tileSize + tileSize/2,
+                    r * tileSize + tileSize/2
+                );
+
+                piece.setFillColor(
+                    isupper(p) ? sf::Color::White : sf::Color::Black
+                );
+
+                window.draw(piece);
+            }
+        }
+    }
+
+    window.display();
+}
+
 // ------------------------
 // Main Program
 // ------------------------
 int main() {
-    std::cout << "Starting\n";
+    std::cout << "Starting up...\n";
+    // load game window
+    const float tileSize = 80.f;
+    sf::RenderWindow window(
+        sf::VideoMode(8 * tileSize, 8 * tileSize),
+        "SFML Chess Board"
+    );
+
+    // load chess font
+    sf::Font font;
+    if (!font.loadFromFile("../src/chess.ttf"))
+    {
+        std::cerr << "Failed to load font\n";
+    }
+    
     // Pipes
     int toEngine[2];
     int fromEngine[2];
@@ -111,10 +221,8 @@ int main() {
 
     pid_t pid = fork();
     if (pid == 0) {
-        // CHILD → Stockfish process
         dup2(toEngine[0], STDIN_FILENO);
         dup2(fromEngine[1], STDOUT_FILENO);
-
         close(toEngine[1]);
         close(fromEngine[0]);
 
@@ -123,7 +231,6 @@ int main() {
         exit(1);
     }
 
-    // PARENT
     close(toEngine[0]);
     close(fromEngine[1]);
 
@@ -131,41 +238,20 @@ int main() {
         write(toEngine[1], s.c_str(), s.size());
     };
 
-    // Initialize Stockfish silently
     send("uci\n");
     readUntil(fromEngine[0], "uciok");
+    send("setoption name Skill Level value 5\n");
     send("isready\n");
     readUntil(fromEngine[0], "readyok");
 
-    // Starting board
-    std::vector<std::string> board = {
-        "rnbqkbnr",
-        "pppppppp",
-        "........",
-        "........",
-        "........",
-        "........",
-        "PPPPPPPP",
-        "RNBQKBNR"
-    };
 
     std::string moves;
 
     while (true) {
         printBoard(board);
+        displayBoard(window, tileSize, font, board);
 
-        // -----------------------
-        // GET LEGAL MOVES
-        // -----------------------
         auto legalMoves = getLegalMoves(fromEngine[0], toEngine[1], moves);
-
-        std::cout << "Legal moves:";
-        for (auto& m : legalMoves) std::cout << " " << m;
-        std::cout << "\n";
-
-        // -----------------------
-        // USER MOVE
-        // -----------------------
         std::string userMove;
         while (true) {
             std::cout << "Your move: ";
@@ -176,20 +262,20 @@ int main() {
                 return 0;
             }
 
-            // Validate against legal moves
             if (std::find(legalMoves.begin(), legalMoves.end(), userMove) != legalMoves.end())
                 break;
 
             std::cout << "Illegal move. Try again.\n";
         }
 
-        // Apply move
         applyMove(board, userMove);
         moves += " " + userMove;
 
-        // -----------------------
-        // ENGINE MOVE
-        // -----------------------
+        
+        printBoard(board);
+        displayBoard(window, tileSize, font, board);
+        sleep(1);
+
         send("position startpos moves" + moves + "\n");
         send("go depth 12\n");
 
@@ -201,7 +287,6 @@ int main() {
         applyMove(board, engineMove);
         moves += " " + engineMove;
     }
-
 
     close(toEngine[1]);
     close(fromEngine[0]);
